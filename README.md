@@ -3,6 +3,8 @@
 
 This plugin let's you turn your window into an eye pleasing mini-player. It is a little bit early for release. I am considering to make it a fully fledged, feature rich player for the entire window. For now, it works. 
 
+![Preview](https://github.com/gothmiku/soundcloud-rpc-miniplayerplug/blob/main/images/readme-demo.gif)
+
 ## Features
  - Integrated with other plugins such as [playback speed](https://github.com/richardhbtz/soundcloud-rpc/blob/main/plugins/playback-speed.js "playback-speed.js")
  - Procedural accented color for the background
