@@ -1,10 +1,10 @@
 /**
- * @name soundcloud-rpc-mini-player
+ * @name mini-player
  * @author gothmiku
- * @version 1.3.0
- * @description Glassmorphic mini player. The layout collapses automatically when the window gets small.
+ * @version 1.3.1
+ * @description Mosaic mini player. The layout collapses automatically when the window gets small.
  * @license MIT
- * @homepage https://github.com/yourname/mini-player
+ * @homepage https://github.com/gothmiku/soundcloud-rpc-miniplayerplug
  */
 
 // ─── Settings ────────────────────────────────────────────────────────────────
@@ -391,7 +391,17 @@ function pageScript(cfg) {
             passed,
             total,
             pct: Math.max(0, Math.min(100, Math.round(pct * 10) / 10)),
+            liked: readLiked(),
         };
+    }
+
+    // SoundCloud's own like button (in its player bar). null = there is none, so there is nothing to like.
+    const LIKE_BTN = '.playbackSoundBadge__like';
+    function readLiked() {
+        const el = $(LIKE_BTN);
+        if (!el) return null;
+        const label = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '');
+        return el.classList.contains('sc-button-selected') || el.getAttribute('aria-pressed') === 'true' || /\bunlike\b/i.test(label);
     }
 
     const clickSC = (sel) => { const el = $(sel); if (el) el.click(); };
@@ -481,6 +491,14 @@ function pageScript(cfg) {
         const h = (hash % 360) / 360;
         const a = hslToRgb(h, 0.7, 0.45), b = hslToRgb((h + 0.12) % 1, 0.65, 0.34);
         return [`rgb(${a.join(', ')})`, `rgb(${b.join(', ')})`];
+    }
+
+    // The card: the primary accent, dark enough for white controls, and a bit see-through so the background shows through.
+    const CARD_ALPHA = 0.86;
+    function cardTone(pal) {
+        const [h, s] = rgbToHsl.apply(null, pxParse(pal[0]));
+        const c = hslToRgb(h, s > 0.12 ? Math.min(0.72, Math.max(0.4, s * 0.85)) : s, 0.2);
+        return `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${CARD_ALPHA})`;
     }
 
     // ── Pixel background ────────────────────────────────────────────────────
@@ -597,6 +615,38 @@ function pageScript(cfg) {
         return pxStretch({ n: N, d }, 0.04, 0.96);
     }
 
+    // Shared by the background and the cover-art mosaic, so both are cut from the same cloth.
+    function pxHatchTile(base, line, p, lw) { // p×p tile: `base` with hard-edged diagonal lines of `line`
+        const t = document.createElement('canvas');
+        t.width = t.height = p;
+        const g = t.getContext('2d');
+        g.fillStyle = pxCss(base); g.fillRect(0, 0, p, p);
+        g.fillStyle = pxCss(line);
+        for (let y = 0; y < p; y++) {
+            for (let x = 0; x < p; x++) {
+                if ((x + y) % p < lw || (((x - y) % p) + p) % p < lw) g.fillRect(x, y, 1, 1);
+            }
+        }
+        return t;
+    }
+    function buildRamp(pal) { // ink → deep accent → accent → pale tint
+        const a = pxParse(pal[0]), b = pxParse(pal[1]);
+        const [h, sat, l] = rgbToHsl(a[0], a[1], a[2]);
+        const ink = hslToRgb(h, Math.min(sat, 0.5) * 0.25, 0.08);
+        const deepA = hslToRgb(h, Math.min(1, sat * 0.95), l * 0.62);
+        const deep = deepA.map((v, i) => Math.round(v + (b[i] - v) * 0.35)); // a hint of the secondary accent
+        const pale = hslToRgb(h, Math.min(0.3, sat * 0.3), 0.82);
+        return [ink, deep, a, pale];
+    }
+    // Which ramp tone a (equalised) luminance maps to: 0..3 = flat tone, 4..9 = crosshatch between two tones.
+    function classify(v) {
+        for (let i = 0; i < 3; i++) {
+            if (v < PX_BREAKS[i] - PX_HATCH) return i;
+            if (v < PX_BREAKS[i] + PX_HATCH) return 4 + i * 2 + (v < PX_BREAKS[i] ? 0 : 1);
+        }
+        return 3;
+    }
+
     function createPixelBg(canvas, host, isPlaying, reduceMotion) {
         const ctx = canvas.getContext && canvas.getContext('2d', { alpha: false });
         if (!ctx) return { show() {}, wake() {}, destroy() {} }; // no 2D canvas: leave the plain backdrop
@@ -611,28 +661,7 @@ function pageScript(cfg) {
         const visible = () => !destroyed && !document.hidden && host.classList.contains('scmp-on');
 
         // ── palette → ramp + crosshatch tiles ───────────────────────────────
-        function makeHatch(base, line, p, lw) {
-            const t = document.createElement('canvas');
-            t.width = t.height = p;
-            const g = t.getContext('2d');
-            g.fillStyle = pxCss(base); g.fillRect(0, 0, p, p);
-            g.fillStyle = pxCss(line);
-            for (let y = 0; y < p; y++) {
-                for (let x = 0; x < p; x++) {
-                    if ((x + y) % p < lw || (((x - y) % p) + p) % p < lw) g.fillRect(x, y, 1, 1); // hard-edged diagonals
-                }
-            }
-            return sg.createPattern(t, 'repeat');
-        }
-        function buildRamp(pal) {
-            const a = pxParse(pal[0]), b = pxParse(pal[1]);
-            const [h, sat, l] = rgbToHsl(a[0], a[1], a[2]);
-            const ink = hslToRgb(h, Math.min(sat, 0.5) * 0.25, 0.08);
-            const deepA = hslToRgb(h, Math.min(1, sat * 0.95), l * 0.62);
-            const deep = deepA.map((v, i) => Math.round(v + (b[i] - v) * 0.35)); // a hint of the secondary accent
-            const pale = hslToRgb(h, Math.min(0.3, sat * 0.3), 0.82);
-            return [ink, deep, a, pale];
-        }
+        const makeHatch = (base, line, p, lw) => sg.createPattern(pxHatchTile(base, line, p, lw), 'repeat');
         function buildPatterns(ramp) {
             const lw = Math.max(1, Math.round(dpr)), p = Math.round(5 * dpr);
             const out = [];
@@ -661,13 +690,6 @@ function pageScript(cfg) {
         }
 
         // ── blocks ──────────────────────────────────────────────────────────
-        function classify(v) {
-            for (let i = 0; i < 3; i++) {
-                if (v < PX_BREAKS[i] - PX_HATCH) return i;
-                if (v < PX_BREAKS[i] + PX_HATCH) return 4 + i * 2 + (v < PX_BREAKS[i] ? 0 : 1);
-            }
-            return 3;
-        }
         function paintLeaf(L) {
             const x = L.c * cs, y = L.r * cs;
             sg.fillStyle = L.code < 4 ? state.rampCss[L.code] : state.patterns[L.code - 4];
@@ -810,6 +832,327 @@ function pageScript(cfg) {
     }
     // ── end pixel background ────────────────────────────────────────────────
 
+    // ── Cover-art tiles ─────────────────────────────────────────────────────
+    // The whole artwork area is ONE canvas (the <img> is only the pixel source), so there is no seam between "image" and "tiles"
+    // anywhere: the cover is painted once, and only the SEAM at its lower edge moves. The seam is a band of tiles, cut like the
+    // background (hard-edged blocks, the same ramp and crosshatch): next to the artwork nearly every tile is a piece of the
+    // cover, further down they turn into accent tiles and gaps, and they keep re-rolling slowly while music plays, until only
+    // the card is left.
+    // The same tiles do the track-change transition. The canvas still holds the old cover, so play() just paints the new one on
+    // top of it, a wave sweeping in from the left. Every tile first shows the new cover, an accent tile, or nothing at all (the old
+    // cover stays visible there), and then settles into what the seam shows at that spot. When the last tile has settled, no pixel
+    // of the old cover is left.
+    const AM_WAVE_MS = 520;                         // how long the wave takes to cross the cover
+    const AM_HOLD_MIN = 100, AM_HOLD_RANGE = 240;   // accent / see-through tiles settle after HOLD_MIN .. HOLD_MIN + HOLD_RANGE ms
+    const AM_SHARE_COVER = 0.42, AM_SHARE_ACCENT = 0.34; // first face of a tile in the transition; the rest (24%) are see-through
+    const SEAM_MAX_CELLS = 1;                       // the seam is at most this many tiles deep ...
+    const SEAM_MAX_SHARE = 0.38;                    // ... and at most this share of the artwork
+    const SEAM_ACCENT = 0.46;                       // share of accent tiles in the middle of the seam
+    const SEAM_PERIOD_MIN = 1500, SEAM_PERIOD_RANGE = 3500; // a seam tile re-rolls every PERIOD_MIN .. PERIOD_MIN + PERIOD_RANGE ms
+    const SEAM_TICK_MS = 110;                       // seam animation step (about 9 fps, chunky like the background)
+    const ART_FOCUS_Y = 0.36;                       // the artwork area is not square: which part of the cover stays in view (0 = top, 1 = bottom)
+
+    function createArtTiles(host, img, isPlaying, reduceMotion, visible) {
+        const cv = document.createElement('canvas');
+        cv.className = 'scmp-cover';
+        cv.setAttribute('aria-hidden', 'true');
+        host.appendChild(cv);
+        const ctx = cv.getContext('2d');
+        let theme = null;                  // { pal, grid, seed } of the artwork on screen
+        let L = null;                      // tile layout for the current theme + size
+        let bandCover = null;              // just the seam's part of the cover (the tiles' pixel source)
+        let animT = 0, lastNow = 0, timer = 0, raf = 0, rz = 0, ro = null, destroyed = false;
+        let held = false, run = null;      // held: a track change owns the canvas
+        let waiting = false, imgFresh = false, themeFresh = false; // the cover is repainted once the new artwork AND its palette are in
+        const hasSrc = () => !!img.getAttribute('src');
+        const loaded = () => hasSrc() && img.complete && img.naturalWidth > 0;
+
+        // The artwork at full size, "object-fit: cover"; 1:1 with the canvas, so tiles cut from it have no seams between them.
+        function makeCover() {
+            if (!L || !loaded()) return null;
+            try {
+                const c = document.createElement('canvas');
+                c.width = L.PW; c.height = L.PH;
+                const nw = img.naturalWidth, nh = img.naturalHeight;
+                const k = Math.max(L.PW / nw, L.PH / nh), sw = L.PW / k, sh = L.PH / k;
+                const g = c.getContext('2d');
+                g.imageSmoothingQuality = 'high';
+                g.drawImage(img, (nw - sw) * 0.5, (nh - sh) * ART_FOCUS_Y, sw, sh, 0, 0, L.PW, L.PH);
+                return c;
+            } catch (e) { return null; }
+        }
+        function cropBand(cover) {
+            bandCover = null;
+            if (!cover || !L) return;
+            const c = document.createElement('canvas');
+            c.width = L.bw; c.height = L.bh;
+            c.getContext('2d').drawImage(cover, L.ox, L.oy, L.bw, L.bh, 0, 0, L.bw, L.bh);
+            bandCover = c;
+        }
+
+        // ── layout ──────────────────────────────────────────────────────────
+        function buildLayout(th) {
+            const cw = host.clientWidth, ch = host.clientHeight;
+            if (!th || !cw || !ch) return null;
+            const dpr = Math.min(3, window.devicePixelRatio || 1);
+            const PW = Math.round(cw * dpr), PH = Math.round(ch * dpr);
+            const axis = (getComputedStyle(host).getPropertyValue('--sd') || '').trim() === 'x' ? 'x' : 'y'; // which way the seam runs
+            const cs = Math.max(4, Math.round(Math.max(10, Math.min(18, Math.round(Math.min(cw, ch) / 16))) * dpr));
+            const len = axis === 'y' ? PH : PW;
+            const Lc = Math.max(3, Math.min(SEAM_MAX_CELLS, Math.round((len * SEAM_MAX_SHARE) / cs)));
+            const bandLen = Lc * cs, bandStart = len - bandLen;
+            const cols = Math.ceil(PW / cs), rows = Math.ceil(PH / cs);
+            // the grid hangs off the seam's far edge, so the seam is exactly Lc tiles deep
+            const gx0 = axis === 'x' ? PW - cols * cs : 0, gy0 = axis === 'y' ? PH - rows * cs : 0;
+            const sd = pxSeed(th.seed || 'idle');
+            const ramp = buildRamp(th.pal);
+            const pp = Math.round(5 * dpr), lw = Math.max(1, Math.round(dpr)), patterns = [];
+            for (let i = 0; i < 3; i++) {
+                patterns.push(ctx.createPattern(pxHatchTile(ramp[i], ramp[i + 1], pp, lw), 'repeat'),
+                              ctx.createPattern(pxHatchTile(ramp[i + 1], ramp[i], pp, lw), 'repeat'));
+            }
+            const lum = th.grid ? pxEqualize(th.grid, 0.7) : null;
+            const side = Math.max(PW, PH), vx = PW / side, vy = PH / side; // visible share of the (square) cover per axis
+            const inBand = (c, r) => (axis === 'y' ? r >= rows - Lc : c >= cols - Lc);
+            const taken = new Uint8Array(cols * rows), blocks = [];
+            const free = (c, r, w, h) => {
+                if (c + w > cols || r + h > rows) return false;
+                const here = inBand(c, r);
+                for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) if (taken[(r + j) * cols + c + i] || inBand(c + i, r + j) !== here) return false;
+                return true;
+            };
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    if (taken[r * cols + c]) continue;
+                    const m = pxHash(c, r, sd + 11);
+                    let w = 1, h = 1;
+                    if (m < 0.14 && free(c, r, 2, 2)) { w = 2; h = 2; }
+                    else if (m < 0.34 && free(c, r, 2, 1)) w = 2;
+                    else if (m < 0.52 && free(c, r, 1, 2)) h = 2;
+                    for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) taken[(r + j) * cols + c + i] = 1;
+                    const gx = gx0 + c * cs, gy = gy0 + r * cs, gw = w * cs, gh = h * cs;
+                    const x = Math.max(0, gx), y = Math.max(0, gy), x2 = Math.min(PW, gx + gw), y2 = Math.min(PH, gy + gh);
+                    if (x2 <= x || y2 <= y) continue;
+                    const cx = Math.min(PW, Math.max(0, gx + gw / 2)), cy = Math.min(PH, Math.max(0, gy + gh / 2));
+                    const band = inBand(c, r);
+                    const s = band ? Math.min(1, Math.max(0, ((axis === 'y' ? cy : cx) - bandStart) / bandLen)) : 0; // 0 at the artwork, 1 at the card
+                    const k = pxHash(c, r, sd + 23);
+                    const type = k < AM_SHARE_COVER ? 0 : k < AM_SHARE_COVER + AM_SHARE_ACCENT ? 1 : 2; // first face in the transition
+                    let v = lum ? pxSample(lum, (1 - vx) * 0.5 + (cx / PW) * vx, (1 - vy) * ART_FOCUS_Y + (cy / PH) * vy) : pxHash(c, r, sd + 31);
+                    v = Math.min(1, Math.max(0, v + (pxHash(c, r, sd + 37) - 0.5) * 0.08));
+                    const code = classify(Math.min(0.78, 0.12 + 0.88 * v)); // accent tiles follow the artwork's own light and dark (lifted: solid ink would look like holes; capped: solid pale would look like a glitch, as a crosshatch it is fine)
+                    const at = ((cx / PW) * 0.72 + pxHash(c, r, sd + 41) * 0.28) * AM_WAVE_MS; // left → right, with jitter
+                    const settle = type === 0 && !band ? at : at + AM_HOLD_MIN + pxHash(c, r, sd + 47) * AM_HOLD_RANGE;
+                    blocks.push({ x, y, w: x2 - x, h: y2 - y, c, r, band, s, type, code, at, settle,
+                        period: SEAM_PERIOD_MIN + pxHash(c, r, sd + 53) * SEAM_PERIOD_RANGE, phase: pxHash(c, r, sd + 59) * SEAM_PERIOD_MIN * 4 });
+                }
+            }
+            const seam = blocks.filter((b) => b.band);
+            return {
+                th, PW, PH, dpr, axis, cs, bandStart, bandLen, sd, blocks, seam,
+                ox: axis === 'x' ? bandStart : 0, oy: axis === 'y' ? bandStart : 0,
+                bw: axis === 'x' ? bandLen : PW, bh: axis === 'y' ? bandLen : PH,
+                rampCss: ramp.map(pxCss), patterns, last: new Uint8Array(seam.length).fill(255), tmp: new Uint8Array(seam.length),
+            };
+        }
+        function ensureLayout() {
+            if (!theme) return null;
+            const cw = host.clientWidth, ch = host.clientHeight;
+            if (L && L.th === theme && L.PW === Math.round(cw * L.dpr) && L.PH === Math.round(ch * L.dpr)) return L;
+            L = buildLayout(theme);
+            if (L && (cv.width !== L.PW || cv.height !== L.PH)) { cv.width = L.PW; cv.height = L.PH; } // (resizing clears it; the same size keeps what is on it)
+            return L;
+        }
+
+        // ── painting ────────────────────────────────────────────────────────
+        // What a seam tile shows at time t: 0 cover, 1 accent, 2 gap. Each tile re-rolls on its own clock, so they change one by one.
+        function seamState(b, t) {
+            const u = pxHash(b.c, b.r, L.sd + 13 + Math.floor((t + b.phase) / b.period) * 7919);
+            const pCover = Math.pow(1 - b.s, 1.4), pAccent = SEAM_ACCENT * Math.sin(Math.PI * b.s);
+            return u < pCover ? 0 : u < pCover + pAccent ? 1 : 2;
+        }
+        // src: a canvas holding the cover at (sox, soy) in artwork coordinates.
+        function paintBlock(g, b, face, src, sox, soy) {
+            g.clearRect(b.x, b.y, b.w, b.h);
+            if (face === 2) return;
+            if (face === 0 && src) { g.drawImage(src, b.x - sox, b.y - soy, b.w, b.h, b.x, b.y, b.w, b.h); return; }
+            g.fillStyle = b.code < 4 ? L.rampCss[b.code] : L.patterns[b.code - 4]; // (no cover to show yet: hold the place with its accent tile)
+            g.fillRect(b.x, b.y, b.w, b.h);
+        }
+        function drawSeam(force) {
+            if (!L) return;
+            let changed = !!force;
+            for (let i = 0; i < L.seam.length; i++) {
+                const s = seamState(L.seam[i], animT);
+                L.tmp[i] = s;
+                if (s !== L.last[i]) changed = true;
+            }
+            if (!changed) return;
+            ctx.clearRect(L.ox, L.oy, L.bw, L.bh);
+            for (let i = 0; i < L.seam.length; i++) paintBlock(ctx, L.seam[i], L.tmp[i], bandCover, L.ox, L.oy);
+            L.last.set(L.tmp);
+        }
+        // The whole artwork area, settled: the cover above the seam (or a plain accent gradient if there is no artwork), and the seam.
+        function paintAll() {
+            if (!L) return;
+            ctx.clearRect(0, 0, L.PW, L.PH);
+            const above = L.axis === 'y' ? [0, 0, L.PW, L.bandStart] : [0, 0, L.bandStart, L.PH];
+            const cover = makeCover();
+            if (cover) {
+                ctx.drawImage(cover, above[0], above[1], above[2], above[3], above[0], above[1], above[2], above[3]);
+            } else if (!hasSrc()) {
+                const g = ctx.createLinearGradient(0, 0, L.PW, L.PH);
+                g.addColorStop(0, L.th.pal[0]); g.addColorStop(1, L.th.pal[1]);
+                ctx.fillStyle = g;
+                ctx.fillRect(above[0], above[1], above[2], above[3]);
+            }
+            cropBand(cover);
+            if (cover) cover.width = 0; // (free it: only the band is kept)
+            L.last.fill(255);
+            drawSeam(true);
+        }
+
+        // ── seam animation ──────────────────────────────────────────────────
+        function schedule() {
+            clearTimeout(timer); timer = 0;
+            if (destroyed || held || !L || !visible() || reduceMotion()) return;
+            timer = setTimeout(tick, SEAM_TICK_MS);
+        }
+        function tick() {
+            timer = 0;
+            if (held || !L || !visible()) return;
+            const now = performance.now(), dt = Math.min(300, now - lastNow);
+            lastNow = now;
+            if (isPlaying() && !reduceMotion()) animT += dt; // the seam only moves while music plays
+            drawSeam(false);
+            schedule();
+        }
+        function showCover(fade) {
+            const st = cv.style;
+            st.transition = 'none';
+            st.opacity = fade ? '0' : '1';
+            if (fade) { void cv.offsetWidth; st.transition = 'opacity .35s'; st.opacity = '1'; }
+        }
+        function refresh(fade) {
+            if (held || destroyed || !visible() || !ensureLayout()) return;
+            paintAll();
+            showCover(fade);
+            lastNow = performance.now();
+            schedule();
+        }
+        function tryShow() {
+            if (!waiting || held || !themeFresh || !(imgFresh || !hasSrc())) return; // (no src at all = deliberately no artwork)
+            waiting = false;
+            L = null;
+            refresh(true); // fades in, once
+        }
+
+        // ── transition ──────────────────────────────────────────────────────
+        function end() {
+            if (!held) return;
+            cancelAnimationFrame(raf);
+            const r = run;
+            run = null; held = false;
+            if (r) {
+                while (r.idx < r.ev.length) r.paint(r.ev[r.idx++]);
+                animT = r.D;
+                const cover = r.cover();
+                cropBand(cover);
+                if (cover) cover.width = 0;
+                for (let i = 0; i < L.seam.length; i++) L.last[i] = seamState(L.seam[i], r.D); // exactly what the settled tiles show
+                if (!cover && hasSrc()) { waiting = true; imgFresh = false; themeFresh = true; } // the artwork never arrived: finish when it does
+            } else {
+                tryShow(); // nothing was assembled (aborted / no artwork): paint what is available, or wait for it
+            }
+            lastNow = performance.now();
+            schedule();
+            if (r) r.resolve();
+        }
+        // A track change starts: the canvas keeps the old cover (and its seam) while the artwork underneath changes.
+        function hold() {
+            end();
+            if (destroyed || !visible() || !ensureLayout()) return;
+            held = true;
+            clearTimeout(timer); timer = 0;
+            showCover(false); // (an unfinished fade-in would hide the old cover)
+        }
+        // pal / grid / seed: the new artwork's palette, luminance field (or null) and a stable string. Resolves once the cover is in place.
+        function play(pal, grid, seed) {
+            return new Promise((resolve) => {
+                if (!held) { resolve(); return; }
+                theme = { pal, grid, seed };
+                L = null; waiting = false;
+                if (!ensureLayout()) { end(); resolve(); return; }
+                let cover = null;
+                const haveCover = () => { if (!cover) cover = makeCover(); return !!cover; };
+                let total = 0;
+                const ev = [];
+                for (const b of L.blocks) {
+                    ev.push({ t: b.at, b, k: 0 });
+                    if (b.settle > b.at) ev.push({ t: b.settle, b, k: 1 });
+                    total = Math.max(total, b.settle);
+                }
+                ev.sort((a, b) => a.t - b.t);
+                const D = total + 40;
+                const paint = (e) => {
+                    const b = e.b, src = haveCover() ? cover : null;
+                    if (e.k === 0) { if (b.type !== 2) paintBlock(ctx, b, b.type, src, 0, 0); } // type 2: leave the old cover showing through
+                    else paintBlock(ctx, b, b.band ? seamState(b, D) : 0, src, 0, 0);            // settle into what the seam shows
+                };
+                run = { resolve, ev, idx: 0, D, paint, cover: () => cover };
+                const t0 = performance.now();
+                const loop = () => {
+                    if (!run) return;
+                    const t = performance.now() - t0;
+                    while (run.idx < ev.length && ev[run.idx].t <= t) {
+                        if (!loaded() && t < D + 400) break; // wait for the artwork rather than paint placeholders
+                        paint(ev[run.idx++]);
+                    }
+                    if (run.idx >= ev.length) end(); else raf = requestAnimationFrame(loop);
+                };
+                raf = requestAnimationFrame(loop);
+            });
+        }
+
+        if (typeof ResizeObserver === 'function') {
+            ro = new ResizeObserver(() => {
+                cancelAnimationFrame(rz);
+                rz = requestAnimationFrame(() => {
+                    const cw = host.clientWidth, ch = host.clientHeight;
+                    if (L && L.PW === Math.round(cw * L.dpr) && L.PH === Math.round(ch * L.dpr)) return; // nothing actually changed (e.g. the first notification)
+                    if (held) end();
+                    L = null;
+                    if (!waiting) refresh(false);
+                });
+            });
+            ro.observe(host);
+        }
+
+        return {
+            // New palette for the artwork on screen.
+            setTheme(pal, grid, seed) {
+                theme = { pal, grid, seed };
+                themeFresh = true;
+                if (held) return;
+                if (waiting) tryShow(); else { L = null; refresh(false); } // (palette of art that is already showing: just repaint)
+            },
+            // The <img> finished loading.
+            imageLoaded() { imgFresh = true; if (!held) tryShow(); },
+            // The artwork is about to change. Outside a transition the old cover goes at once and the new one fades in when it and its palette are there.
+            reset() {
+                waiting = true; imgFresh = false; themeFresh = false;
+                bandCover = null;
+                if (held) return;
+                cv.style.transition = 'none'; cv.style.opacity = '0';
+            },
+            wake() { if (!held && !waiting) refresh(false); },
+            busy: () => held,
+            hold, play, cancel: end,
+            destroy() { destroyed = true; end(); clearTimeout(timer); cancelAnimationFrame(rz); if (ro) ro.disconnect(); cv.remove(); },
+        };
+    }
+    // ── end cover-art tiles ─────────────────────────────────────────────────
+
     // ── DOM ─────────────────────────────────────────────────────────────────
     const ICON = {
         burger: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
@@ -822,7 +1165,7 @@ function pageScript(cfg) {
         note: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>',
         queue: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h12M4 12h7M4 17h7"/><path d="M14.5 13.5v7l5.5-3.5z" fill="currentColor"/></svg>',
     };
-    // Film grain for the glass card: a tiled SVG noise texture (white specks, alpha = GRAIN_STRENGTH * noise).
+    // Film grain over the whole card (artwork + the accent shade below it): a tiled SVG noise texture (white specks, alpha = GRAIN_STRENGTH * noise).
     const GRAIN_STRENGTH = 0.08; // 0 = none, ~0.16 and beyond = heavy
     const GRAIN_URI = 'data:image/svg+xml,' + encodeURIComponent(
         "<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'>" +
@@ -833,18 +1176,20 @@ function pageScript(cfg) {
     const CSS = `
 @property --scmp-a { syntax: '<color>'; inherits: true; initial-value: rgb(255, 85, 0); }
 @property --scmp-b { syntax: '<color>'; inherits: true; initial-value: rgb(110, 60, 190); }
+@property --scmp-cs { syntax: '<color>'; inherits: true; initial-value: rgba(66, 24, 4, .86); }
 
 #scmp-root, #scmp-root * { box-sizing: border-box; }
 #scmp-root {
   --scmp-a: rgb(255, 85, 0);
   --scmp-b: rgb(110, 60, 190);
+  --scmp-cs: rgba(66, 24, 4, .86);  /* the card: a dark shade of the accent, a bit see-through (see cardTone) */
   --scmp-inset: 0px;
   position: fixed; left: 0; right: 0; bottom: 0; top: var(--scmp-inset);
   z-index: 2147483000; display: none; overflow: hidden; overflow: clip;
   color: #fff; background: #0e0c10;
   font: 13px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   -webkit-user-select: none; user-select: none; cursor: default;
-  transition: --scmp-a .9s ease, --scmp-b .9s ease;
+  transition: --scmp-a .9s ease, --scmp-b .9s ease, --scmp-cs .9s ease;
 }
 #scmp-root.scmp-on { display: block; }
 
@@ -880,15 +1225,9 @@ function pageScript(cfg) {
 #scmp-root.scmp-reveal { --rr: 100px; --ra: .6; --fa: 0; }
 #scmp-root.scmp-reveal::before { z-index: 20; }
 
-.scmp-glass {
-  /* a light blur + dark tint instead of the old heavy frost, so the pixel background stays visible behind the card */
-  background: url("${GRAIN_URI}") 0 0 / 160px 160px, linear-gradient(145deg, rgba(255,255,255,.12), rgba(255,255,255,.04)), rgba(8,7,12,.46);
-  border: 1px solid rgba(255,255,255,.14);
-  box-shadow: 0 10px 40px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.26);
-  -webkit-backdrop-filter: blur(2px) saturate(130%); backdrop-filter: blur(2px) saturate(130%);
-}
-
-.scmp-shell { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px; padding: 10px 14px 14px; }
+/* z-index: 1 makes the shell one stacking context, so the z-indexes used inside it (body, like button, lit edges)
+   can no longer outrank the scrim and drawers, which sit above it (30 / 31). */
+.scmp-shell { position: absolute; z-index: 1; inset: 0; display: flex; flex-direction: column; gap: 10px; padding: 10px 14px 14px; }
 .scmp-top { flex: none; height: 36px; display: flex; align-items: center; gap: 10px; -webkit-app-region: drag; }
 .scmp-menu .scmp-top, .scmp-queue .scmp-top { -webkit-app-region: no-drag; }
 .scmp-label { flex: 1; text-align: center; font-weight: 600; opacity: .8; text-shadow: 0 1px 8px rgba(0,0,0,.5); }
@@ -901,20 +1240,36 @@ function pageScript(cfg) {
 .scmp-btn:focus-visible, .scmp-item:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .scmp-btn svg { width: 100%; height: 100%; display: block; }
 .scmp-icon { width: 36px; height: 36px; padding: 8px; }
+/* like: a round button on the artwork's top right (it mirrors SoundCloud's own like button) */
+.scmp-like { position: absolute; z-index: 6; top: 14px; right: 14px; width: 40px; height: 40px; padding: 10px; border-radius: 50%;
+  color: #fff; background: rgba(10,10,16,.42); border: 1px solid rgba(255,255,255,.14); --rr: 48px;
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+.scmp-like:hover { background: rgba(10,10,16,.62); }
+.scmp-like[hidden] { display: none; }
+.scmp-like svg path { fill: transparent; stroke: currentColor; stroke-width: 2.1; stroke-linejoin: round; transition: fill .2s, stroke .2s; }
+.scmp-like.is-liked { color: #ff4d6a; }
+.scmp-like.is-liked svg path { fill: #ff4d6a; stroke: #ff4d6a; }
+.scmp-like.is-liked svg { filter: drop-shadow(0 0 5px rgba(255,77,106,.55)); }
+.scmp-like.pop svg { animation: scmp-pop .42s cubic-bezier(.2, .9, .3, 1.4); }
+@keyframes scmp-pop { 0% { scale: 1; } 40% { scale: 1.35; } 100% { scale: 1; } }
 
-.scmp-card { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 14px; padding: 16px; border-radius: 13px;
+/* ── the card: a translucent shade of the accent; the cover sits on top, and a seam of tiles separates the two ── */
+.scmp-card { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; border-radius: 24px;
+  background: url("${GRAIN_URI}") 0 0 / 160px 160px, var(--scmp-cs);
+  border: 1px solid rgba(255,255,255,.14); box-shadow: 0 18px 46px rgba(0,0,0,.45);
   --ri: -1px; --rr: 105px; --ra: .9; --fr: 230px; --fa: .06; }
-.scmp-art-wrap { position: relative; flex: 1 1 0; min-height: 0; container-type: size; display: grid; place-items: center; }
-.scmp-art-wrap::before { content: ''; position: absolute; inset: 0; pointer-events: none; opacity: .7;
-  background: radial-gradient(closest-side, var(--scmp-a), transparent);
-  animation: scmp-pulse 6s ease-in-out infinite; }
-.scmp-art { position: relative; z-index: 1; width: 100cqmin; height: 100cqmin; border-radius: 9px; overflow: hidden;
-  background: linear-gradient(135deg, var(--scmp-a), var(--scmp-b));
-  box-shadow: 0 16px 36px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.14); }
-.scmp-art img { display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .35s; }
-.scmp-art img.ready { opacity: 1; }
+.scmp-card.scmp-reveal::before, .scmp-card.scmp-reveal::after { z-index: 5; } /* lit edge + spotlight sit above the artwork */
+/* Upper part of the card = the artwork, painted on ONE canvas (see createArtTiles): the cover, and at its lower edge a seam of
+   tiles through which the card shows. The <img> inside .scmp-art is only the pixel source and never shown.
+   --sd = which way the seam runs: y = along the bottom edge, x = along the right edge (compact layout). */
+.scmp-art-wrap { position: relative; z-index: 0; flex: 1 1 0; min-height: 0; overflow: hidden; border-radius: 23px 23px 0 0; --sd: y; }
+.scmp-art-wrap::after { content: ''; position: absolute; inset: 0; z-index: 4; pointer-events: none;
+  background: url("${GRAIN_URI}") 0 0 / 160px 160px; }
+.scmp-art { display: none; }
+.scmp-cover { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; display: block; pointer-events: none;
+  image-rendering: pixelated; }
 
-.scmp-body { flex: none; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.scmp-body { position: relative; z-index: 1; flex: none; display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 8px 20px 20px; }
 .scmp-meta { min-width: 0; text-align: center; }
 .scmp-title { font-size: 17px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; text-shadow: 0 1px 10px rgba(0,0,0,.35); }
@@ -933,8 +1288,10 @@ function pageScript(cfg) {
 .scmp-times { display: flex; justify-content: space-between; margin-top: 6px; font-size: 11.5px; opacity: .78;
   font-variant-numeric: tabular-nums; }
 
-.scmp-controls { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; }
-.scmp-transport { display: flex; align-items: center; gap: 16px; }
+/* knob | transport | speed. minmax(0, 1fr) keeps the two outer columns equal even when their content is wider than the
+   space left, so the transport stays centred exactly under the timeline (plain 1fr would shove it sideways). */
+.scmp-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; }
+.scmp-transport { display: flex; align-items: center; justify-self: center; gap: 16px; }
 .scmp-knobcell { justify-self: start; }
 .scmp-skip { width: 46px; height: 46px; padding: 11px; }
 
@@ -993,10 +1350,11 @@ function pageScript(cfg) {
 .is-playing .scmp-play .i-pause { display: block; }
 
 /* burger drawer */
-.scmp-scrim { position: absolute; inset: 0; background: rgba(0,0,0,.4); opacity: 0; pointer-events: none; transition: opacity .25s; }
+.scmp-scrim { position: absolute; z-index: 30; inset: 0; background: rgba(0,0,0,.4); opacity: 0; pointer-events: none; transition: opacity .25s; }
 .scmp-menu .scmp-scrim, .scmp-queue .scmp-scrim { opacity: 1; pointer-events: auto; }
-.scmp-drawer { position: absolute; top: 0; bottom: 0; left: 0; width: min(88%, 310px); display: flex; flex-direction: column;
-  transform: translateX(-104%); transition: transform .3s cubic-bezier(.2,.8,.2,1);
+.scmp-drawer { position: absolute; z-index: 31; top: 0; bottom: 0; left: 0; width: min(88%, 310px); display: flex; flex-direction: column;
+  transform: translateX(-104%); visibility: hidden; /* hidden while closed: its shadow would otherwise leak onto the card */
+  transition: transform .3s cubic-bezier(.2,.8,.2,1), visibility 0s linear .3s;
   background: linear-gradient(160deg, rgba(255,255,255,.2), rgba(255,255,255,.06)), rgba(14,14,22,.4);
   border-right: 1px solid rgba(255,255,255,.16); border-radius: 0 26px 26px 0;
   box-shadow: 20px 0 60px rgba(0,0,0,.4);
@@ -1004,7 +1362,10 @@ function pageScript(cfg) {
   -webkit-backdrop-filter: blur(34px) saturate(180%); backdrop-filter: blur(34px) saturate(180%); }
 .scmp-drawer.right { left: auto; right: 0; transform: translateX(104%); border-right: 0; border-left: 1px solid rgba(255,255,255,.16);
   border-radius: 26px 0 0 26px; box-shadow: -20px 0 60px rgba(0,0,0,.4); }
-.scmp-menu .scmp-drawer.left, .scmp-queue .scmp-drawer.right { transform: translateX(0); }
+.scmp-menu .scmp-drawer.left, .scmp-queue .scmp-drawer.right { transform: translateX(0); visibility: visible; transition-delay: 0s; }
+/* while a panel is open, the surfaces underneath stop glowing so their lit edges can't show through the glass */
+.scmp-menu .scmp-shell .scmp-reveal::before, .scmp-menu .scmp-shell .scmp-reveal::after,
+.scmp-queue .scmp-shell .scmp-reveal::before, .scmp-queue .scmp-shell .scmp-reveal::after { opacity: 0 !important; }
 .scmp-dh { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 14px 12px 8px 18px;
   font-size: 15px; font-weight: 700; }
 .scmp-list { flex: 1; overflow-y: auto; padding: 2px 10px 14px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.3) transparent; }
@@ -1033,22 +1394,50 @@ function pageScript(cfg) {
 .scmp-eq i:nth-child(3) { animation-delay: -.6s; }
 @keyframes scmp-eq { from { scale: 1 .25; } to { scale: 1 1; } }
 
+/* narrow window: smaller controls, so the knob, transport and speed button never crowd each other */
+@media (max-width: 380px) {
+  .scmp-body { padding-left: 14px; padding-right: 14px; }
+  .scmp-transport { gap: 8px; }
+  .scmp-skip { width: 40px; height: 40px; padding: 9px; }
+  .scmp-play { width: 54px; height: 54px; padding: 15px; }
+  .scmp-knob, .scmp-speedbtn { width: 40px; height: 40px; }
+}
+
 /* very short window: art on the left, controls on the right */
 @media (max-height: 360px) {
-  .scmp-card { flex-direction: row; align-items: center; gap: 16px; padding: 12px; border-radius: 22px; }
-  .scmp-art-wrap { flex: none; align-self: stretch; width: max(96px, calc(100vh - var(--scmp-inset) - 104px)); }
-  .scmp-body { flex: 1; justify-content: center; gap: 10px; }
-  .scmp-meta { text-align: left; }
-  .scmp-controls { display: flex; justify-content: flex-start; gap: 10px; }
-  .scmp-speedcell { order: 3; margin-left: 6px; }
-  .scmp-knobcell { order: 2; margin-left: 6px; }
-  .scmp-transport { gap: 10px; }
-  .scmp-skip { width: 40px; height: 40px; padding: 9px; }
-  .scmp-play { width: 52px; height: 52px; padding: 14px; }
+  .scmp-card { flex-direction: row; border-radius: 22px; }
+  /* the art never takes more than 40% of the width, so the controls always get room */
+  .scmp-art-wrap { flex: none; align-self: stretch; width: min(max(110px, calc(100vh - var(--scmp-inset) - 92px)), 40%); margin: 0;
+    border-radius: 21px 0 0 21px; }
+  .scmp-art-wrap { --sd: x; }
+  .scmp-like { top: 10px; right: 10px; width: 34px; height: 34px; padding: 8px; }
+  /* title, timeline and volume knob share one left edge; the right padding keeps the title clear of the like button */
+  .scmp-body { flex: 1; justify-content: center; gap: 10px; padding: 12px 18px; }
+  .scmp-meta { padding: 0 30px 0 0; text-align: left; }
+  /* same three-column row as the tall layout: the transport sits centred under the timeline */
+  .scmp-transport { gap: 6px; }
+  .scmp-skip { width: 36px; height: 36px; padding: 8px; }
+  .scmp-play { width: 48px; height: 48px; padding: 13px; }
+  .scmp-knob, .scmp-speedbtn { width: 36px; height: 36px; }
+}
+@media (max-height: 360px) and (max-width: 380px) {
+  .scmp-body { padding-left: 14px; padding-right: 14px; }
+  .scmp-meta { padding-right: 26px; }
+  .scmp-transport { gap: 2px; }
+  .scmp-skip { width: 32px; height: 32px; padding: 7px; }
+  .scmp-play { width: 42px; height: 42px; padding: 11px; }
+  .scmp-knob, .scmp-speedbtn { width: 32px; height: 32px; }
+}
+@media (max-height: 360px) and (max-width: 340px) { /* smallest windows: less art, tighter controls */
+  .scmp-art-wrap { width: min(max(90px, calc(100vh - var(--scmp-inset) - 92px)), 30%); }
+  .scmp-skip { width: 30px; height: 30px; padding: 7px; }
+  .scmp-play { width: 40px; height: 40px; padding: 11px; }
+  .scmp-knob, .scmp-speedbtn { width: 28px; height: 28px; }
+  .scmp-cap { inset: 6px; }
 }
 @media (prefers-reduced-motion: reduce) {
   #scmp-root, #scmp-root * { transition: none !important; }
-  .scmp-art-wrap::before, .scmp-eq i { animation: none !important; }
+  .scmp-eq i, .scmp-like.pop svg { animation: none !important; }
 }
 `;
 
@@ -1070,7 +1459,8 @@ function pageScript(cfg) {
           <div class="scmp-label">Now playing</div>
           <button class="scmp-btn scmp-icon scmp-reveal" data-act="queue" aria-label="Open queue">${ICON.queue}</button>
         </header>
-        <section class="scmp-card scmp-glass scmp-reveal">
+        <section class="scmp-card scmp-reveal">
+          <button class="scmp-btn scmp-like scmp-reveal" data-act="like" aria-label="Like" aria-pressed="false" title="Like" hidden>${ICON.heart}</button>
           <div class="scmp-art-wrap"><div class="scmp-art"><img alt=""></div></div>
           <div class="scmp-body">
             <div class="scmp-meta"><div class="scmp-title"></div><div class="scmp-author"></div></div>
@@ -1134,6 +1524,8 @@ function pageScript(cfg) {
         canvas: $('.scmp-pixels', root),
         img: $('.scmp-art img', root),
         art: $('.scmp-art', root),
+        artWrap: $('.scmp-art-wrap', root),
+        like: $('.scmp-like', root),
         meta: $('.scmp-meta', root),
         knob: $('.scmp-knob', root),
         knobArc: $('.scmp-knob .val', root),
@@ -1157,9 +1549,12 @@ function pageScript(cfg) {
         speedMsg: $('.scmp-speedmsg', root),
         speedPresets: Array.from(root.querySelectorAll('.scmp-chipbtn')),
     };
-    els.img.addEventListener('load', () => els.img.classList.add('ready'));
+    els.img.addEventListener('load', () => artTiles.imageLoaded()); // (the tiles decide when the new cover is painted)
     const pixelBg = createPixelBg(els.canvas, root, () => root.classList.contains('is-playing'),
         () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches));
+    const artTiles = createArtTiles(els.artWrap, els.img, () => root.classList.contains('is-playing'),
+        () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
+        () => !document.hidden && root.classList.contains('scmp-on'));
 
     // ── Cursor reveal ───────────────────────────────────────────────────────
     // Every .scmp-reveal surface gets its own local cursor position. Surfaces within reach of the
@@ -1202,12 +1597,31 @@ function pageScript(cfg) {
     function setPalette(pal) {
         root.style.setProperty('--scmp-a', pal[0]);
         root.style.setProperty('--scmp-b', pal[1]);
+        root.style.setProperty('--scmp-cs', cardTone(pal));
     }
     let paletteToken = 0;
+    // What the cover mosaic needs from the palette pass. It arrives a little after the <img> itself, so a swap waits for it (briefly).
+    let artPal = DEFAULT_PALETTE, artGrid = null, palPending = false, palWaiters = [];
+    function palSettle(pal, grid, seed) {
+        artPal = pal; artGrid = grid; palPending = false;
+        artTiles.setTheme(pal, grid, seed);
+        const w = palWaiters; palWaiters = [];
+        w.forEach((f) => f());
+    }
+    function waitPal(ms) {
+        if (!palPending) return Promise.resolve();
+        return new Promise((resolve) => {
+            let done = false;
+            const fin = () => { if (!done) { done = true; resolve(); } };
+            palWaiters.push(fin);
+            setTimeout(fin, ms);
+        });
+    }
     function updatePalette(url, fallbackSeed) {
         const token = ++paletteToken;
         const seed = fallbackSeed || url || 'idle';
-        if (!url) { setPalette(DEFAULT_PALETTE); pixelBg.show(DEFAULT_PALETTE, null, seed); return; }
+        if (!url) { setPalette(DEFAULT_PALETTE); palSettle(DEFAULT_PALETTE, null, seed); pixelBg.show(DEFAULT_PALETTE, null, seed); return; }
+        palPending = true;
         const img = new Image();
         img.crossOrigin = 'anonymous';
         img.onload = () => {
@@ -1217,20 +1631,49 @@ function pageScript(cfg) {
             try { grid = lumaGrid(img); } catch (e) { /* tainted canvas: the background falls back to a seeded pattern */ }
             pal = pal || hashPalette(seed);
             setPalette(pal);
+            palSettle(pal, grid, seed);
             pixelBg.show(pal, grid, seed);
         };
         img.onerror = () => {
             if (token !== paletteToken) return;
             const pal = hashPalette(seed);
             setPalette(pal);
+            palSettle(pal, null, seed);
             pixelBg.show(pal, null, seed);
         };
         img.src = url;
     }
     function setArt(url, seed) {
-        els.img.classList.remove('ready');
+        artTiles.reset(); // the old cover goes (or, in a track change, stays until the tiles replace it); the new one is painted once it and its palette are in
         if (url) els.img.src = url; else els.img.removeAttribute('src');
         updatePalette(url, seed);
+    }
+
+    // ── Like ────────────────────────────────────────────────────────────────
+    // Mirrors SoundCloud's like button. A press clicks the real one; the heart flips at once (SoundCloud takes a moment to
+    // confirm) and the polled state takes over again after a short hold, or as soon as it agrees.
+    let likeHold = null, curId = '';
+    function paintLike(liked) {
+        const b = els.like, label = liked ? 'Unlike' : 'Like';
+        b.hidden = liked === null;
+        b.classList.toggle('is-liked', liked === true);
+        b.setAttribute('aria-pressed', liked === true ? 'true' : 'false');
+        b.setAttribute('aria-label', label);
+        b.title = label;
+    }
+    function toggleLike() {
+        const btn = $(LIKE_BTN);
+        if (!btn) return;
+        const next = cur.liked !== true;
+        btn.click();
+        likeHold = { value: next, until: Date.now() + 1800, id: curId };
+        cur.liked = next;
+        paintLike(next);
+        if (next && !reduceMotion()) { // a little pop
+            els.like.classList.remove('pop');
+            void els.like.offsetWidth;
+            els.like.classList.add('pop');
+        }
     }
 
     // ── Render loop ─────────────────────────────────────────────────────────
@@ -1247,15 +1690,19 @@ function pageScript(cfg) {
     const reduceMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
     const finish = (anims, max) => Promise.race([Promise.all(anims.map((a) => a.finished.catch(() => {}))), sleep(max)]);
 
-    function paintTrack(t) {
+    function paintText(t) {
         if (t.title !== painted.title) {
             els.title.textContent = t.title || 'Nothing playing';
             els.title.title = t.title;
         }
         if (t.author !== painted.author) els.author.textContent = t.author || 'Pick a track from your library';
-        if (t.art !== painted.art) setArt(t.art, t.title + t.author);
-        painted = { title: t.title, author: t.author, art: t.art };
+        painted.title = t.title; painted.author = t.author;
     }
+    function paintArt(t) {
+        if (t.art !== painted.art) setArt(t.art, t.title + t.author);
+        painted.art = t.art;
+    }
+    function paintTrack(t) { paintText(t); paintArt(t); }
     function waitArt(ms) {
         const img = els.img;
         if (!img.getAttribute('src') || (img.complete && img.naturalWidth)) return Promise.resolve();
@@ -1266,38 +1713,50 @@ function pageScript(cfg) {
             setTimeout(done, ms);
         });
     }
-    // Track change: the old art + title blur and shrink to 80% while fading out, then the new
-    // ones slide in from the right while fading in. It is built to fail safe: a minimised window
-    // stops animating and throttles timers, so a swap there is dropped (the new track is simply
-    // painted) instead of being left half-done with the art and title invisible.
+    // Track change. The old title blurs and shrinks to 80% while fading out, then the new title slides in from the right
+    // while fading in. The old cover does not leave at all: it is frozen as it is, and the new cover is assembled on top of
+    // it, tile by tile, sweeping in from the left (see createArtTiles). That starts right away, alongside the title, as soon
+    // as the new artwork is loaded. When the last tile has settled the frozen old cover is thrown away.
+    // It is built to fail safe: a minimised window stops animating and throttles timers, so a swap there is dropped
+    // (the new track is simply painted) instead of being left half-done with the art or title invisible.
     function abortSwap() {
         swapToken++; // a swap that is still awaiting something stops touching the page
         swapAnims.forEach((a) => { try { a.cancel(); } catch (e) { /* ignore */ } });
         swapAnims = [];
+        artTiles.cancel(); // finishes a half-built cover (shows the real image) before the newest track is painted
         swapping = false;
         if (target) { shown = target; paintTrack(target); }
     }
     async function runSwap() {
         const token = ++swapToken;
         swapStart = Date.now();
-        const parts = [els.art, els.meta];
         try {
-            const outs = parts.map((el) => el.animate(
+            const next = target;
+            const outs = [els.meta.animate(
                 [{ opacity: 1, filter: 'blur(0px)', scale: 1 }, { opacity: 0, filter: 'blur(14px)', scale: 0.8 }],
-                { duration: 280, easing: 'cubic-bezier(.4, 0, .8, .4)', fill: 'forwards' }));
+                { duration: 280, easing: 'cubic-bezier(.4, 0, .8, .4)', fill: 'forwards' })];
             swapAnims = outs;
+            artTiles.hold();   // old cover (and its seam) stay on screen as a snapshot
+            shown = next;
+            paintArt(next);    // the <img> (hidden under the snapshot) and the palette start loading now
+            const built = (async () => {
+                await waitArt(350);
+                await waitPal(250);
+                if (token !== swapToken) return;
+                if (!els.img.getAttribute('src')) { artTiles.cancel(); return; } // no artwork: nothing to assemble
+                await Promise.race([artTiles.play(artPal, artGrid, next.title + next.author), sleep(1800)]);
+            })();
             await finish(outs, 700);
             if (token !== swapToken) return;
-            shown = target;
-            paintTrack(shown);
-            await waitArt(350);
-            if (token !== swapToken) return;
-            const ins = parts.map((el, i) => el.animate(
+            paintText(next);
+            const ins = [els.meta.animate(
                 [{ opacity: 0, translate: '56px 0', filter: 'blur(0px)', scale: 1 }, { opacity: 1, translate: '0 0', filter: 'blur(0px)', scale: 1 }],
-                { duration: 460, delay: i * 60, easing: 'cubic-bezier(.2, .8, .2, 1)', fill: 'both' }));
+                { duration: 460, delay: 60, easing: 'cubic-bezier(.2, .8, .2, 1)', fill: 'both' })];
             swapAnims = swapAnims.concat(ins);
-            await finish(ins, 1200);
+            await Promise.all([finish(ins, 1200), built]);
+            artTiles.cancel(); // no-op when it finished; settles it if the window stalled
         } catch (e) {
+            artTiles.cancel();
             if (token === swapToken) { shown = target; paintTrack(shown); }
         }
         if (token !== swapToken) return;
@@ -1320,6 +1779,12 @@ function pageScript(cfg) {
         showTrack(t);
         if (seeking || Date.now() < holdProgressUntil) { t.pct = cur.pct; t.passed = cur.passed; } // we are showing the seek position
         if (t.playing !== cur.playing) root.classList.toggle('is-playing', t.playing);
+        curId = trackId(t);
+        if (likeHold) { // keep what the user just pressed on screen until SoundCloud agrees (or a moment has passed, or the track changed)
+            if (likeHold.id !== curId || t.liked === likeHold.value || t.liked === null || Date.now() > likeHold.until) likeHold = null;
+            else t.liked = likeHold.value;
+        }
+        if (t.liked !== cur.liked) paintLike(t.liked);
         if (t.passed !== cur.passed) els.cur.textContent = t.passed;
         if (t.total !== cur.total) els.tot.textContent = t.total;
         if (t.pct !== cur.pct) {
@@ -1415,7 +1880,12 @@ function pageScript(cfg) {
     // ── Queue (read from SoundCloud's own "Up next" panel) ──────────────────
     // SoundCloud only renders the queue while its panel is open. The mini player covers the page,
     // so it opens that panel behind the scenes, mirrors the list, and closes it again afterwards.
-    const QUEUE_TOGGLE = '.playbackSoundBadge__showQueue, .playbackSoundBadge__queueCircle, .playControls [title*="queue" i], .playControls [aria-label*="queue" i]';
+    const QUEUE_TOGGLE = [
+        '.playbackSoundBadge__showQueue', '.playbackSoundBadge__queueCircle',
+        '.playControls [title*="queue" i]', '.playControls [aria-label*="queue" i]',
+        '.playControls [title*="next up" i]', '.playControls [aria-label*="next up" i]',
+        '.playbackSoundBadge [title*="next up" i]', '.playbackSoundBadge [aria-label*="next up" i]',
+    ].join(', ');
     const queueNodes = () => Array.from(document.querySelectorAll('.queueItemView'));
     const textOf = (n, sel) => { const e = n.querySelector(sel); return e ? e.textContent.trim() : ''; };
     function readQueue() {
@@ -1430,23 +1900,31 @@ function pageScript(cfg) {
             };
         }).filter((q) => q.title);
     }
-    let queueOwned = false;   // true when we opened SoundCloud's panel and should close it again
+    let queueOwned = false;   // true while SoundCloud's panel is open because WE clicked it (and so we must close it again)
     let queueTimer = null;
     let queueSig = '';
+    let queueRun = 0;         // bumped on every start, so an older, slower start can't overwrite a newer one
+    const queueReady = () => readQueue().length > 0; // rows that already carry a title (not just empty placeholders)
+    // Opens SoundCloud's panel once and waits for it to fill. It never clicks the toggle a second time while we
+    // already own an open panel: the button is a toggle, so a second blind click would close the panel again.
+    // Resolves true (rows are there), false (the panel never filled) or null (there is no queue button to click).
     async function ensureQueueOpen() {
-        if (queueNodes().length) return true;
-        const toggle = $(QUEUE_TOGGLE);
-        if (!toggle) return false;
-        toggle.click();
-        queueOwned = true;
-        for (let i = 0; i < 14 && !queueNodes().length; i++) await sleep(150);
+        if (queueReady()) return true;                  // already open and filled (e.g. opened by hand earlier)
+        if (!queueOwned && !queueNodes().length) {
+            const toggle = $(QUEUE_TOGGLE);
+            if (!toggle) { console.warn('[mini-player] SoundCloud\u2019s queue button wasn\u2019t found, so the queue can\u2019t be read.'); return null; }
+            toggle.click();
+            queueOwned = true;
+        }
+        // At a small window size the panel can take a while to render its rows.
+        for (let i = 0; i < 34 && !queueReady(); i++) await sleep(150);
         return queueNodes().length > 0;
     }
     function releaseQueue() {
-        if (!queueOwned || !queueNodes().length) return;
+        if (!queueOwned) return;
+        queueOwned = false;
         const toggle = $(QUEUE_TOGGLE);
         if (toggle) toggle.click();
-        queueOwned = false;
     }
     function renderQueue(status, items) {
         const list = els.qlist;
@@ -1467,6 +1945,7 @@ function pageScript(cfg) {
         };
         if (status === 'loading') note('Reading your queue…');
         else if (status === 'error') note('Couldn’t read the queue from SoundCloud. Start a track, then try again.', 'retry-queue');
+        else if (status === 'no-button') note('Couldn’t find SoundCloud’s queue button at this window size. Open the queue once in a larger window and it will show up here.', 'retry-queue');
         else if (!items.length) note('Nothing is queued up yet.');
         else {
             items.forEach((q) => {
@@ -1490,10 +1969,16 @@ function pageScript(cfg) {
         clearInterval(queueTimer);
         queueTimer = null;
         queueSig = '';
+        const run = ++queueRun;
         renderQueue('loading');
         const ok = await ensureQueueOpen();
+        if (run !== queueRun) return;                   // a newer start (retry, reopen) took over
         if (panelOf() !== 'queue') { releaseQueue(); return; } // closed while we were opening it
-        if (!ok) { renderQueue('error'); return; }
+        if (!ok) {
+            releaseQueue();                             // put SoundCloud's panel back, so a retry starts from a known state
+            renderQueue(ok === null ? 'no-button' : 'error');
+            return;
+        }
         refreshQueue(true);
         const current = els.qlist.querySelector('.is-current'); // centre it inside the list only (scrollIntoView would also scroll the player)
         if (current) {
@@ -1503,6 +1988,7 @@ function pageScript(cfg) {
         queueTimer = setInterval(() => refreshQueue(false), 1000);
     }
     function stopQueue() {
+        queueRun++;                                     // cancels a start that is still waiting for the panel
         clearInterval(queueTimer);
         queueTimer = null;
         releaseQueue();
@@ -1588,7 +2074,8 @@ function pageScript(cfg) {
         else if (act === 'play') clickSC('.playControls__play');
         else if (act === 'next') clickSC('.playControls__next, .skipControl__next');
         else if (act === 'prev') clickSC('.playControls__prev, .skipControl__previous');
-        if (act === 'play' || act === 'next' || act === 'prev') setTimeout(tick, 150);
+        else if (act === 'like') toggleLike();
+        if (act === 'play' || act === 'next' || act === 'prev' || act === 'like') setTimeout(tick, 150);
         if (el.blur) el.blur(); // keeps Space from double-triggering SoundCloud's own shortcut
     });
     root.addEventListener('keydown', (e) => {
@@ -1744,6 +2231,7 @@ function pageScript(cfg) {
         document.documentElement.classList.toggle('scmp-mini', mini);
         if (mini) {
             pixelBg.wake();
+            artTiles.wake();
             cur = {}; painted = {}; shown = null; target = null;
             volumeOwned = false;
             adoptVolume();
@@ -1769,6 +2257,7 @@ function pageScript(cfg) {
         apply();
         if (!active) return;
         pixelBg.wake();
+        artTiles.wake();
         if (swapping) abortSwap();
         tick();
         root.style.opacity = '0.999';
@@ -1790,6 +2279,7 @@ function pageScript(cfg) {
         cancelAnimationFrame(raf);
         cancelAnimationFrame(revealRaf);
         pixelBg.destroy();
+        artTiles.destroy();
         window.removeEventListener('resize', onResize);
         document.removeEventListener('visibilitychange', onVisible);
         window.removeEventListener('focus', onVisible);
