@@ -1269,7 +1269,9 @@ function pageScript(cfg) {
 .scmp-cover { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; display: block; pointer-events: none;
   image-rendering: pixelated; }
 
-.scmp-body { position: relative; z-index: 1; flex: none; display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 8px 20px 20px; }
+/* no z-index here on purpose: a z-index would make the body its own stacking context and trap the speed popup (z-index 7)
+   below the like button (6), which is a sibling of the body */
+.scmp-body { position: relative; flex: none; display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 8px 20px 20px; }
 .scmp-meta { min-width: 0; text-align: center; }
 .scmp-title { font-size: 17px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; text-shadow: 0 1px 10px rgba(0,0,0,.35); }
@@ -1322,7 +1324,7 @@ function pageScript(cfg) {
   border: 1px solid rgba(255,255,255,.2); background: rgba(255,255,255,.08); }
 .scmp-speedbtn.is-active { background: #fff; color: #14141c; border-color: #fff; }
 .scmp-speedbtn.is-off { opacity: .5; }
-.scmp-speedpop { position: absolute; right: 0; bottom: calc(100% + 12px); z-index: 6; width: 232px; padding: 12px; border-radius: 18px;
+.scmp-speedpop { position: absolute; right: 0; bottom: calc(100% + 12px); z-index: 7; width: 232px; padding: 12px; border-radius: 18px;
   background: linear-gradient(145deg, rgba(255,255,255,.16), rgba(255,255,255,.05)), rgba(14,14,22,.78);
   border: 1px solid rgba(255,255,255,.2); box-shadow: 0 14px 40px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.25);
   -webkit-backdrop-filter: blur(26px) saturate(170%); backdrop-filter: blur(26px) saturate(170%);
