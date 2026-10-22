@@ -1,7 +1,7 @@
 /**
  * @name mini-player
  * @author gothmiku
- * @version 1.3.1
+ * @version 1.3.2
  * @description Mosaic mini player. The layout collapses automatically when the window gets small.
  * @license MIT
  * @homepage https://github.com/gothmiku/soundcloud-rpc-miniplayerplug
@@ -259,8 +259,30 @@ function pageScript(cfg) {
         volumeOwned = true;
         paintKnob();
         flashKnob();
-        if (media.size) media.forEach(pushVolume);
+        if (media.size) { media.forEach(pushVolume); scheduleScSync(); }
         else sliderSync(volume);
+    }
+    // The knob only ever wrote to the <audio> elements, so SoundCloud's own volume state kept its old value
+    // and re-applied it on every track change. Nudging its slider (debounced, so a drag doesn't spam it)
+    // makes SoundCloud's state match the knob, which turns its re-apply into a no-op.
+    let scSyncTimer = null;
+    function scheduleScSync() {
+        clearTimeout(scSyncTimer);
+        scSyncTimer = setTimeout(() => { if (!disposed) sliderSync(volume); }, 150);
+    }
+    // Belt and braces: while the knob is in charge, put any element that drifted back to the knob's value.
+    // Runs on the poll tick and in a short burst after a track change, because SoundCloud can apply its
+    // volume late (after the new stream has loaded) rather than at the moment the track switches.
+    let enforceTimers = [];
+    function enforceVolume() {
+        if (!volumeOwned || !active) return;
+        media.forEach((el) => {
+            if (Math.abs(el.volume - volume) > 0.005) { try { el.volume = volume; } catch (e) { /* ignore */ } }
+        });
+    }
+    function burstEnforce() {
+        enforceTimers.forEach(clearTimeout);
+        enforceTimers = [0, 250, 700, 1500, 3000].map((ms) => setTimeout(() => { if (!disposed) enforceVolume(); }, ms));
     }
     function adoptVolume() {
         let v = null;
@@ -1781,7 +1803,9 @@ function pageScript(cfg) {
         showTrack(t);
         if (seeking || Date.now() < holdProgressUntil) { t.pct = cur.pct; t.passed = cur.passed; } // we are showing the seek position
         if (t.playing !== cur.playing) root.classList.toggle('is-playing', t.playing);
-        curId = trackId(t);
+        const newId = trackId(t);
+        if (curId && newId !== curId) burstEnforce(); // new track: SoundCloud may reset the volume, so re-assert the knob's
+        curId = newId;
         if (likeHold) { // keep what the user just pressed on screen until SoundCloud agrees (or a moment has passed, or the track changed)
             if (likeHold.id !== curId || t.liked === likeHold.value || t.liked === null || Date.now() > likeHold.until) likeHold = null;
             else t.liked = likeHold.value;
@@ -1803,6 +1827,7 @@ function pageScript(cfg) {
     const tick = () => {
         render(readTrack());
         paintSpeed();
+        enforceVolume();
         if (!volumeOwned && !media.size) { // no audio element captured yet: follow SoundCloud's slider
             const v = readScVolume();
             if (v !== null && Math.abs(v - volume) > 0.005) { volume = v; paintKnob(); }
@@ -2295,6 +2320,8 @@ function pageScript(cfg) {
         media.forEach((el) => el.removeEventListener('volumechange', onMediaVolume));
         media.clear();
         clearTimeout(flashTimer);
+        clearTimeout(scSyncTimer);
+        enforceTimers.forEach(clearTimeout);
         stopQueue();
         if (window.fetch === patchedFetch) window.fetch = realFetch;
         if (XMLHttpRequest.prototype.open === patchedOpen) XMLHttpRequest.prototype.open = realOpen;
