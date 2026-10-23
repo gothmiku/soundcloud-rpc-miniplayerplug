@@ -1,7 +1,7 @@
 /**
  * @name mini-player
  * @author gothmiku
- * @version 1.3.2
+ * @version 1.3.3
  * @description Mosaic mini player. The layout collapses automatically when the window gets small.
  * @license MIT
  * @homepage https://github.com/gothmiku/soundcloud-rpc-miniplayerplug
@@ -15,6 +15,7 @@ const CFG = {
     alwaysOnTop: true,                           // float above other windows while the window is small
     topInset: 0,                                 // px left uncovered at the top (custom title bar buttons)
     speedPluginFile: 'playback-speed.js',        // if this file sits next to this one, a speed button is shown
+    downloadButton: true,                        // show a download button while the SoundCloud Downloader plugin is active
 };
 
 // ─── Main process ───────────────────────────────────────────────────────────
@@ -383,6 +384,15 @@ function pageScript(cfg) {
     // ── Reading the real player ─────────────────────────────────────────────
     const toSec = (s) => (s || '').trim().split(':').reduce((a, n) => a * 60 + (parseInt(n, 10) || 0), 0);
 
+    // Path of the playing track's page ("/artist/track"), without the "?in=playlist" context SoundCloud may add. '' = unknown.
+    function trackPath(href) {
+        if (!href) return '';
+        try {
+            const path = new URL(href, location.origin).pathname;
+            return path.split('/').filter(Boolean).length >= 2 ? path : '';
+        } catch (e) { return ''; }
+    }
+
     function readTrack() {
         const titleEl = $('.playbackSoundBadge__titleLink');
         const authorEl = $('.playbackSoundBadge__lightLink');
@@ -408,6 +418,7 @@ function pageScript(cfg) {
         return {
             title: titleEl ? titleEl.getAttribute('title') || titleEl.textContent.trim() : '',
             author: authorEl ? authorEl.textContent.trim() : '',
+            url: titleEl ? trackPath(titleEl.getAttribute('href')) : '',
             art,
             playing: !!playBtn && (playBtn.classList.contains('playing') || /pause/i.test(playBtn.title || '')),
             passed,
@@ -1186,6 +1197,9 @@ function pageScript(cfg) {
         heart: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>',
         note: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>',
         queue: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h12M4 12h7M4 17h7"/><path d="M14.5 13.5v7l5.5-3.5z" fill="currentColor"/></svg>',
+        download: '<svg class="i-dl" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19.5h14"/></svg>',
+        done: '<svg class="i-done" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></svg>',
+        fail: '<svg class="i-fail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.8v5M12 16.2v.1"/></svg>',
     };
     // Film grain over the whole card (artwork + the accent shade below it): a tiled SVG noise texture (white specks, alpha = GRAIN_STRENGTH * noise).
     const GRAIN_STRENGTH = 0.08; // 0 = none, ~0.16 and beyond = heavy
@@ -1194,6 +1208,8 @@ function pageScript(cfg) {
         "<filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/>" +
         "<feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 " + GRAIN_STRENGTH + " 0'/></filter>" +
         "<rect width='100%' height='100%' filter='url(#n)'/></svg>");
+
+    const DL_RING = 117.81; // circumference of the download ring (r = 18.75)
 
     const CSS = `
 @property --scmp-a { syntax: '<color>'; inherits: true; initial-value: rgb(255, 85, 0); }
@@ -1262,18 +1278,43 @@ function pageScript(cfg) {
 .scmp-btn:focus-visible, .scmp-item:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .scmp-btn svg { width: 100%; height: 100%; display: block; }
 .scmp-icon { width: 36px; height: 36px; padding: 8px; }
-/* like: a round button on the artwork's top right (it mirrors SoundCloud's own like button) */
-.scmp-like { position: absolute; z-index: 6; top: 14px; right: 14px; width: 40px; height: 40px; padding: 10px; border-radius: 50%;
+/* like (top right, mirrors SoundCloud's own like button) and download (top left) are round glass buttons on the artwork's corners */
+.scmp-like, .scmp-dl { position: absolute; z-index: 6; top: 14px; width: 40px; height: 40px; padding: 10px; border-radius: 50%;
   color: #fff; background: rgba(10,10,16,.42); border: 1px solid rgba(255,255,255,.14); --rr: 48px;
   -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
-.scmp-like:hover { background: rgba(10,10,16,.62); }
-.scmp-like[hidden] { display: none; }
+.scmp-like { right: 14px; }
+.scmp-dl { left: 14px; }
+.scmp-like:hover, .scmp-dl:hover { background: rgba(10,10,16,.62); }
+.scmp-like[hidden], .scmp-dl[hidden] { display: none; }
 .scmp-like svg path { fill: transparent; stroke: currentColor; stroke-width: 2.1; stroke-linejoin: round; transition: fill .2s, stroke .2s; }
 .scmp-like.is-liked { color: #ff4d6a; }
 .scmp-like.is-liked svg path { fill: #ff4d6a; stroke: #ff4d6a; }
 .scmp-like.is-liked svg { filter: drop-shadow(0 0 5px rgba(255,77,106,.55)); }
 .scmp-like.pop svg { animation: scmp-pop .42s cubic-bezier(.2, .9, .3, 1.4); }
 @keyframes scmp-pop { 0% { scale: 1; } 40% { scale: 1.35; } 100% { scale: 1; } }
+
+/* download: the icon becomes a progress ring while a download runs, then a check mark (or an error mark) for a moment.
+   It only exists while the SoundCloud Downloader plugin is active (see paintDownload). */
+.scmp-dl .i-done, .scmp-dl .i-fail { display: none; }
+.scmp-dl.is-done .i-dl, .scmp-dl.is-error .i-dl { display: none; }
+.scmp-dl.is-done .i-done, .scmp-dl.is-error .i-fail { display: block; }
+.scmp-dl.is-done { color: #3ddc84; }
+.scmp-dl.is-error { color: #ff6b6b; }
+.scmp-dl.is-busy { cursor: progress; }
+.scmp-dl .scmp-dlring { position: absolute; inset: -1px; width: calc(100% + 2px); height: calc(100% + 2px); rotate: -90deg; opacity: 0;
+  pointer-events: none; transition: opacity .2s; }
+.scmp-dlring circle { fill: none; stroke-width: 2.5; stroke-linecap: round; }
+.scmp-dlring .trk { stroke: rgba(255,255,255,.16); }
+.scmp-dlring .val { stroke: #fff; stroke-dasharray: 0 ${DL_RING}; transition: stroke-dasharray .25s linear; filter: drop-shadow(0 0 3px var(--scmp-a)); }
+.scmp-dl.is-busy .scmp-dlring { opacity: 1; }
+.scmp-dl.indet .scmp-dlring { animation: scmp-spin 1s linear infinite; }
+.scmp-dl.indet .scmp-dlring .val { stroke-dasharray: 32 ${DL_RING}; transition: none; }
+@keyframes scmp-spin { to { transform: rotate(360deg); } }
+.scmp-dltip { position: absolute; z-index: 6; top: 22px; left: 62px; width: fit-content; max-width: calc(100% - 124px); padding: 3px 10px;
+  border-radius: 99px; background: rgba(0,0,0,.5); font-size: 11.5px; font-weight: 600; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; opacity: 0; pointer-events: none; transition: opacity .15s;
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+.scmp-dltip.show { opacity: 1; }
 
 /* ── the card: a translucent shade of the accent; the cover sits on top, and a seam of tiles separates the two ── */
 .scmp-card { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; border-radius: 24px;
@@ -1435,6 +1476,8 @@ function pageScript(cfg) {
     border-radius: 21px 0 0 21px; }
   .scmp-art-wrap { --sd: x; }
   .scmp-like { top: 10px; right: 10px; width: 34px; height: 34px; padding: 8px; }
+  .scmp-dl { top: 10px; left: 10px; width: 34px; height: 34px; padding: 8px; }
+  .scmp-dltip { top: 16px; left: 52px; max-width: calc(100% - 104px); }
   /* title, timeline and volume knob share one left edge; the right padding keeps the title clear of the like button */
   .scmp-body { flex: 1; justify-content: center; gap: 10px; padding: 12px 18px; }
   .scmp-meta { padding: 0 30px 0 0; text-align: left; }
@@ -1459,9 +1502,11 @@ function pageScript(cfg) {
   .scmp-knob, .scmp-speedbtn { width: 28px; height: 28px; }
   .scmp-cap { inset: 6px; }
 }
+/* a window this short has no spare room for the download pill (it would cover the title): the button's colour and tooltip say it instead */
+@media (max-height: 280px) { .scmp-dltip.show { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
   #scmp-root, #scmp-root * { transition: none !important; }
-  .scmp-eq i, .scmp-like.pop svg { animation: none !important; }
+  .scmp-eq i, .scmp-like.pop svg, .scmp-dl.indet .scmp-dlring { animation: none !important; }
 }
 `;
 
@@ -1485,6 +1530,11 @@ function pageScript(cfg) {
         </header>
         <section class="scmp-card scmp-reveal">
           <button class="scmp-btn scmp-like scmp-reveal" data-act="like" aria-label="Like" aria-pressed="false" title="Like" hidden>${ICON.heart}</button>
+          <button class="scmp-btn scmp-dl scmp-reveal" data-act="download" aria-label="Download track" title="Download track" hidden>
+            <svg class="scmp-dlring" viewBox="0 0 40 40" aria-hidden="true"><circle class="trk" cx="20" cy="20" r="18.75"/><circle class="val" cx="20" cy="20" r="18.75"/></svg>
+            ${ICON.download}${ICON.done}${ICON.fail}
+          </button>
+          <span class="scmp-dltip" role="status" aria-live="polite"></span>
           <div class="scmp-art-wrap"><div class="scmp-art"><img alt=""></div></div>
           <div class="scmp-body">
             <div class="scmp-meta"><div class="scmp-title"></div><div class="scmp-author"></div></div>
@@ -1550,6 +1600,9 @@ function pageScript(cfg) {
         art: $('.scmp-art', root),
         artWrap: $('.scmp-art-wrap', root),
         like: $('.scmp-like', root),
+        dl: $('.scmp-dl', root),
+        dlArc: $('.scmp-dlring .val', root),
+        dlTip: $('.scmp-dltip', root),
         meta: $('.scmp-meta', root),
         knob: $('.scmp-knob', root),
         knobArc: $('.scmp-knob .val', root),
@@ -1700,6 +1753,88 @@ function pageScript(cfg) {
         }
     }
 
+    // ── Download ────────────────────────────────────────────────────────────
+    // Hands the playing track to the SoundCloud Downloader plugin through window.SoundCloudDL.download(url, onProgress),
+    // so the files, tags and settings are exactly what that plugin does elsewhere. The button only shows while the plugin
+    // is active. Progress messages look like { progress: 0..100 }, 101 = saved, or { error, errorLabel }.
+    // Jobs are kept per track: skipping to another track doesn't cancel a running download or show its progress on the new track.
+    const downloads = new Map(); // track path -> { state: 'busy' | 'done' | 'error', progress, label, detail, timer }
+    const downloadApi = () => {
+        const api = window.SoundCloudDL;
+        return api && typeof api.download === 'function' ? api : null;
+    };
+    let dlSig = '';
+    function paintDownload() {
+        const api = cfg.downloadButton === false ? null : downloadApi();
+        const path = cur.url || '';
+        const job = path ? downloads.get(path) : null;
+        const show = !!api && !!path;
+        const state = job ? job.state : 'idle';
+        const pct = job ? Math.max(0, Math.min(100, Math.round(job.progress))) : 0;
+        const sig = [show, state, pct, job ? job.label : ''].join('|');
+        if (sig === dlSig) return;
+        dlSig = sig;
+        const b = els.dl;
+        b.hidden = !show;
+        b.classList.toggle('is-busy', state === 'busy');
+        b.classList.toggle('indet', state === 'busy' && pct === 0);
+        b.classList.toggle('is-done', state === 'done');
+        b.classList.toggle('is-error', state === 'error');
+        // preparing (no progress yet): no inline value, so the stylesheet's short spinning arc applies
+        els.dlArc.style.strokeDasharray = state === 'busy' && pct === 0 ? '' : (DL_RING * pct / 100).toFixed(2) + ' ' + DL_RING;
+        let label = 'Download track', tip = '';
+        if (state === 'busy') label = pct >= 100 ? 'Saving…' : pct > 0 ? 'Downloading… ' + pct + '%' : 'Preparing…';
+        else if (state === 'done') { label = 'Downloaded'; tip = 'Saved'; }
+        else if (state === 'error') { label = 'Download failed: ' + (job.detail || job.label) + ' (click to retry)'; tip = job.label; }
+        b.setAttribute('aria-label', label);
+        b.setAttribute('aria-busy', String(state === 'busy'));
+        b.title = label;
+        els.dlTip.textContent = tip;
+        els.dlTip.classList.toggle('show', !!tip);
+    }
+    function startDownload() {
+        const api = downloadApi();
+        const path = cur.url || '';
+        if (!api || !path) return;
+        const prev = downloads.get(path);
+        if (prev && prev.state === 'busy') return; // already running
+        if (prev) clearTimeout(prev.timer);
+        const job = { state: 'busy', progress: 0, label: '', detail: '', timer: 0 };
+        downloads.set(path, job);
+        const settle = (state, holdMs) => { // show the result for a moment, then go back to the plain button
+            job.state = state;
+            if (state === 'done') job.progress = 100;
+            clearTimeout(job.timer);
+            job.timer = setTimeout(() => {
+                if (downloads.get(path) === job) downloads.delete(path);
+                paintDownload();
+            }, holdMs);
+            paintDownload();
+        };
+        const onMessage = (m) => {
+            if (disposed || job.state !== 'busy' || !m) return;
+            if (m.error) {
+                job.label = m.errorLabel || 'Download failed';
+                job.detail = String(m.error);
+                settle('error', 6000);
+            } else if (m.progress === 101) {
+                settle('done', 2400);
+            } else if (Number.isFinite(m.progress) && m.progress > job.progress) {
+                job.progress = Math.min(100, m.progress);
+                paintDownload();
+            }
+        };
+        paintDownload();
+        try {
+            Promise.resolve(api.download(location.origin + path, onMessage)).then(
+                () => onMessage(job.state === 'busy' ? { error: 'The downloader finished without a result.', errorLabel: 'No result' } : null),
+                (err) => onMessage({ error: String((err && err.message) || err), errorLabel: 'Unexpected error' })
+            );
+        } catch (err) {
+            onMessage({ error: String((err && err.message) || err), errorLabel: 'Unexpected error' });
+        }
+    }
+
     // ── Render loop ─────────────────────────────────────────────────────────
     let cur = {};
     let painted = {};      // title / author / art currently on screen
@@ -1827,6 +1962,7 @@ function pageScript(cfg) {
     const tick = () => {
         render(readTrack());
         paintSpeed();
+        paintDownload();
         enforceVolume();
         if (!volumeOwned && !media.size) { // no audio element captured yet: follow SoundCloud's slider
             const v = readScVolume();
@@ -2102,6 +2238,7 @@ function pageScript(cfg) {
         else if (act === 'next') clickSC('.playControls__next, .skipControl__next');
         else if (act === 'prev') clickSC('.playControls__prev, .skipControl__previous');
         else if (act === 'like') toggleLike();
+        else if (act === 'download') startDownload();
         if (act === 'play' || act === 'next' || act === 'prev' || act === 'like') setTimeout(tick, 150);
         if (el.blur) el.blur(); // keeps Space from double-triggering SoundCloud's own shortcut
     });
@@ -2255,6 +2392,7 @@ function pageScript(cfg) {
         if (mini === active) return;
         active = mini;
         root.classList.toggle('scmp-on', mini);
+        // Other plugins key off this class: the SoundCloud Downloader hides its floating settings button while it is set.
         document.documentElement.classList.toggle('scmp-mini', mini);
         if (mini) {
             pixelBg.wake();
@@ -2321,6 +2459,8 @@ function pageScript(cfg) {
         media.clear();
         clearTimeout(flashTimer);
         clearTimeout(scSyncTimer);
+        downloads.forEach((job) => clearTimeout(job.timer));
+        downloads.clear();
         enforceTimers.forEach(clearTimeout);
         stopQueue();
         if (window.fetch === patchedFetch) window.fetch = realFetch;
@@ -2366,6 +2506,7 @@ module.exports = {
             breakpoint: CFG.breakpoint,
             topInset: CFG.topInset,
             speedPlugin: detectSpeedPlugin(),
+            downloadButton: CFG.downloadButton,
         };
         return '(' + pageScript.toString() + ')(' + JSON.stringify(pageCfg) + ');';
     },
